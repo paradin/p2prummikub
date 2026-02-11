@@ -1,0 +1,5 @@
+{
+  "name": "webtrc Rummikub",
+  "description": "A classic Rummikub (拉密) tile-based game. Play against 3 AI opponents. Features tile sorting, set validation, and initial meld rules.",
+  "requestFramePermissions": []
+}
