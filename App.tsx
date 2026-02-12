@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Tile, TileSet, GameState, NetworkMessage, TileColor } from './types';
-import { createDeck, isValidSet, calculateSetPoints, sortHand, aiPlayTurn } from './utils/gameLogic';
+import { createDeck, isValidSet, calculateSetPoints, sortHand, sortTileSet, aiPlayTurn } from './utils/gameLogic';
 import TileComponent from './components/TileComponent';
 import { P2PConnection } from './utils/webrtc';
 
@@ -94,6 +94,43 @@ const App: React.FC = () => {
     broadcastState(newState);
   };
 
+  const handleAddToSet = (setIdx: number) => {
+    if (!isMyTurn || selectedInHand.size === 0) return;
+
+    if (!gameState.hasMeld[gameState.myPlayerIndex]) {
+      alert("You must complete your Initial Meld (30 points) with new sets before adding to existing board tiles.");
+      return;
+    }
+
+    const tilesToAdd = gameState.playerHand.filter(t => selectedInHand.has(t.id));
+    const targetSet = [...gameState.board[setIdx], ...tilesToAdd];
+
+    if (!isValidSet(targetSet)) {
+      alert("Invalid move: This would make the set illegal.");
+      return;
+    }
+
+    setGameState(prev => {
+      const newBoard = [...prev.board];
+      newBoard[setIdx] = sortTileSet(targetSet);
+      const newHand = prev.playerHand.filter(t => !selectedInHand.has(t.id));
+      const ns = {
+        ...prev,
+        board: newBoard,
+        playerHand: newHand,
+      };
+      if (newHand.length === 0) ns.winner = prev.myPlayerIndex;
+      ns.message = getTurnMessage(ns);
+      if (prev.playerRole === 'client') {
+        connections.current.get(0)?.send({ type: 'ACTION_MOVE', payload: { board: ns.board, hand: ns.playerHand, hasMeld: true }, fromIndex: prev.myPlayerIndex });
+      } else {
+        broadcastState(ns);
+      }
+      return ns;
+    });
+    setSelectedInHand(new Set());
+  };
+
   const handleClientMessage = useCallback((connIdx: number, msg: NetworkMessage) => {
     setGameState(prev => {
       if (prev.playerRole !== 'host') return prev;
@@ -106,7 +143,7 @@ const App: React.FC = () => {
             const drawn = newPool.pop()!;
             const newAiHands = [...newState.aiHands];
             newAiHands[connIdx - 1] = [...newAiHands[connIdx - 1], drawn];
-            newState = { ...newState, pool: newPool, iHands: newAiHands, currentPlayerIndex: (connIdx + 1) % 4 };
+            newState = { ...newState, pool: newPool, aiHands: newAiHands, currentPlayerIndex: (connIdx + 1) % 4 };
           }
           break;
         case 'ACTION_MOVE':
@@ -168,12 +205,11 @@ const App: React.FC = () => {
   }, [gameState.currentPlayerIndex, gameState.gameStarted, gameState.winner, gameState.playerRole, broadcastState, gameState.humanPlayers]);
 
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text).then(() => {
+    navigator.clipboard.readText().then(() => {
       alert("Code copied!");
     });
   };
 
-  // Fix: Added missing pasteFromClipboard function
   const pasteFromClipboard = (setter: (val: string) => void) => {
     navigator.clipboard.readText().then((text) => {
       setter(text);
@@ -285,7 +321,13 @@ const App: React.FC = () => {
               </div>
             ) : (
               gameState.board.map((set, i) => (
-                <div key={i} className="flex bg-slate-50 p-2 rounded-xl border-2 border-slate-100 shadow-sm">
+                <div 
+                  key={i} 
+                  onClick={() => handleAddToSet(i)}
+                  className={`flex bg-slate-50 p-2 rounded-xl border-2 shadow-sm transition-all ${
+                    isMyTurn ? 'hover:border-indigo-400 cursor-pointer' : 'border-slate-100'
+                  }`}
+                >
                   {set.map(tile => <TileComponent key={tile.id} tile={tile} size="sm" disabled />)}
                 </div>
               ))
@@ -347,7 +389,7 @@ const App: React.FC = () => {
                   const newHand = prev.playerHand.filter(t => !selectedInHand.has(t.id));
                   const ns = {
                     ...prev,
-                    board: [...prev.board, selectedTiles],
+                    board: [...prev.board, sortTileSet(selectedTiles)],
                     playerHand: newHand,
                     hasMeld: prev.hasMeld.map((m, i) => i === prev.myPlayerIndex ? true : m)
                   };

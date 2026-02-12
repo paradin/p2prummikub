@@ -33,6 +33,30 @@ export const shuffle = <T,>(array: T[]): T[] => {
   return newArray;
 };
 
+/**
+ * Sorts a set of tiles based on whether it is a Run (same color, sequential numbers)
+ * or a Group (same number, different colors).
+ */
+export const sortTileSet = (set: TileSet): TileSet => {
+  const nonJokers = set.filter(t => !t.isJoker);
+  if (nonJokers.length === 0) return set;
+
+  // Check if it's likely a group (all same number)
+  const isGroup = nonJokers.every(t => t.number === nonJokers[0].number);
+  
+  return [...set].sort((a, b) => {
+    if (a.isJoker && !b.isJoker) return 1;
+    if (!a.isJoker && b.isJoker) return -1;
+    if (a.isJoker && b.isJoker) return 0;
+    
+    if (isGroup) {
+      return a.color.localeCompare(b.color);
+    } else {
+      return a.number - b.number;
+    }
+  });
+};
+
 export const sortHand = (hand: Tile[], type: 'number' | 'color'): Tile[] => {
   return [...hand].sort((a, b) => {
     if (a.isJoker && !b.isJoker) return 1;
@@ -183,7 +207,7 @@ export const aiPlayTurn = (hand: Tile[], board: TileSet[], hasMeld: boolean): { 
           const tile = currentHand[j];
           const testSet = [...currentBoard[i], tile];
           if (isValidSet(testSet)) {
-            currentBoard[i] = testSet;
+            currentBoard[i] = sortTileSet(testSet);
             currentHand.splice(j, 1);
             madeMove = true;
             changed = true;
