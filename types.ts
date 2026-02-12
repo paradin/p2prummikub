@@ -19,7 +19,7 @@ export type TileSet = Tile[];
 export interface GameState {
   board: TileSet[];
   playerHand: Tile[];
-  aiHands: Tile[][]; // In multiplayer, these represent other players (Human or AI)
+  aiHands: Tile[][]; 
   pool: Tile[];
   currentPlayerIndex: number;
   hasMeld: boolean[];
@@ -29,6 +29,7 @@ export interface GameState {
   playerRole: 'host' | 'client' | 'single';
   myPlayerIndex: number;
   gameStarted: boolean;
+  humanPlayers: number[]; // Indices of players controlled by humans (Host is always 0)
 }
 
 export interface NetworkMessage {
