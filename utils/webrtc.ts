@@ -5,30 +5,43 @@ export class P2PConnection {
   onMessage?: (data: any) => void;
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
 
-  constructor() {
+  constructor(customIceServers?: RTCIceServer[]) {
+    const defaultServers: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:stun.services.mozilla.com' }
+    ];
+
     this.pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun.services.mozilla.com' }
-      ],
-      iceCandidatePoolSize: 10
+      iceServers: customIceServers && customIceServers.length > 0 ? customIceServers : defaultServers,
+      iceCandidatePoolSize: 20, // Increased for better discovery
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
     });
 
     this.pc.onconnectionstatechange = () => {
-      console.log("WebRTC State:", this.pc.connectionState);
+      console.log("WebRTC State Change:", this.pc.connectionState);
       this.onConnectionStateChange?.(this.pc.connectionState);
     };
 
     this.pc.oniceconnectionstatechange = () => {
-      console.log("ICE State:", this.pc.iceConnectionState);
+      console.log("ICE Connection State:", this.pc.iceConnectionState);
+      if (this.pc.iceConnectionState === 'failed') {
+        this.onConnectionStateChange?.('failed');
+      }
     };
   }
 
   async createOffer(): Promise<string> {
-    this.dc = this.pc.createDataChannel('game-data', { negotiated: false });
+    this.dc = this.pc.createDataChannel('game-data', { 
+      ordered: true,
+      maxRetransmits: 3 
+    });
     this.setupDataChannel();
+    
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
     
@@ -36,24 +49,30 @@ export class P2PConnection {
   }
 
   async handleOffer(offerB64: string): Promise<string> {
-    const offer = JSON.parse(atob(offerB64));
-    this.pc.ondatachannel = (event) => {
-      this.dc = event.channel;
-      this.setupDataChannel();
-    };
-    await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
+    try {
+      const offer = JSON.parse(atob(offerB64));
+      this.pc.ondatachannel = (event) => {
+        this.dc = event.channel;
+        this.setupDataChannel();
+      };
+      await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
 
-    return this.waitForIceGathering();
+      return this.waitForIceGathering();
+    } catch (e) {
+      console.error("Error handling offer:", e);
+      throw e;
+    }
   }
 
   private waitForIceGathering(): Promise<string> {
     return new Promise((resolve) => {
+      // Wait for iceGatheringState to be complete or a timeout
       const timeout = setTimeout(() => {
-        console.warn("ICE gathering timed out, sending partial candidates");
+        console.warn("ICE gathering timed out, resolving with current localDescription");
         resolve(btoa(JSON.stringify(this.pc.localDescription)));
-      }, 10000); // 延长到 10 秒以适应移动网络
+      }, 8000); 
 
       const checkState = () => {
         if (this.pc.iceGatheringState === 'complete') {
@@ -77,21 +96,28 @@ export class P2PConnection {
       const answer = JSON.parse(atob(answerB64));
       await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
     } catch (e) {
-      console.error("Failed to set remote description", e);
+      console.error("Failed to set remote description (Answer)", e);
       throw e;
     }
   }
 
   setupDataChannel() {
     if (!this.dc) return;
-    this.dc.onopen = () => console.log("DataChannel Open");
-    this.dc.onclose = () => console.log("DataChannel Closed");
+    this.dc.onopen = () => {
+      console.log("DataChannel Open ✅");
+      this.onConnectionStateChange?.('connected');
+    };
+    this.dc.onclose = () => {
+      console.log("DataChannel Closed ❌");
+      this.onConnectionStateChange?.('disconnected');
+    };
+    this.dc.onerror = (e) => console.error("DataChannel Error:", e);
     this.dc.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
         this.onMessage?.(data);
       } catch (err) {
-        console.error("Failed to parse P2P message", err);
+        console.error("P2P Message Parse Error:", err);
       }
     };
   }

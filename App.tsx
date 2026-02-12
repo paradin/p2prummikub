@@ -28,7 +28,7 @@ const getInitialGameState = (role: 'host' | 'client' | 'single' = 'single'): Gam
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(() => getInitialGameState());
   const [showNetwork, setShowNetwork] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Network State
   const connections = useRef<Map<number, P2PConnection>>(new Map());
@@ -37,6 +37,7 @@ const App: React.FC = () => {
   const [remoteOffer, setRemoteOffer] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [connStatus, setConnStatus] = useState<string>("idle");
+  const [customIceJson, setCustomIceJson] = useState<string>("");
 
   const [selectedInHand, setSelectedInHand] = useState<Set<string>>(new Set());
 
@@ -86,7 +87,7 @@ const App: React.FC = () => {
       board: [],
       hasMeld: [false, false, false, false],
       winner: null,
-      message: `Game started! ${getTurnMessage(gameState)}`,
+      message: getTurnMessage(gameState),
     };
     newState.message = getTurnMessage(newState);
     setGameState(newState);
@@ -105,7 +106,7 @@ const App: React.FC = () => {
             const drawn = newPool.pop()!;
             const newAiHands = [...newState.aiHands];
             newAiHands[connIdx - 1] = [...newAiHands[connIdx - 1], drawn];
-            newState = { ...newState, pool: newPool, aiHands: newAiHands, currentPlayerIndex: (connIdx + 1) % 4 };
+            newState = { ...newState, pool: newPool, iHands: newAiHands, currentPlayerIndex: (connIdx + 1) % 4 };
           }
           break;
         case 'ACTION_MOVE':
@@ -172,19 +173,29 @@ const App: React.FC = () => {
     });
   };
 
-  const pasteFromClipboard = async (setter: (val: string) => void) => {
-    try {
-      const text = await navigator.clipboard.readText();
+  // Fix: Added missing pasteFromClipboard function
+  const pasteFromClipboard = (setter: (val: string) => void) => {
+    navigator.clipboard.readText().then((text) => {
       setter(text);
-    } catch(e) {
-      alert("Please paste manually.");
+    }).catch(err => {
+      console.error('Failed to read clipboard contents: ', err);
+    });
+  };
+
+  const getIceConfig = () => {
+    try {
+      if (!customIceJson.trim()) return undefined;
+      return JSON.parse(customIceJson);
+    } catch (e) {
+      alert("Invalid JSON for Custom ICE Servers. Using defaults.");
+      return undefined;
     }
   };
 
   const initHostConnection = async () => {
     setIsGenerating(true);
     setConnStatus("gathering");
-    const conn = new P2PConnection();
+    const conn = new P2PConnection(getIceConfig());
     const index = gameState.humanPlayers.length;
     if (index >= 4) { alert("Game full!"); setIsGenerating(false); return; }
     
@@ -194,7 +205,7 @@ const App: React.FC = () => {
       if (state === 'connected') {
         setGameState(gs => {
           const newHumans = [...gs.humanPlayers, index];
-          const next = { ...gs, humanPlayers: newHumans, message: `Player ${index} connected!` };
+          const next = { ...gs, humanPlayers: newHumans, message: `Player ${index} joined!` };
           setTimeout(() => broadcastState(next), 1000);
           return next;
         });
@@ -217,7 +228,7 @@ const App: React.FC = () => {
     if (!remoteOffer) { alert("Paste invite code first."); return; }
     setIsGenerating(true);
     setConnStatus("generating_answer");
-    const conn = new P2PConnection();
+    const conn = new P2PConnection(getIceConfig());
     
     conn.onMessage = (msg) => {
       if (msg.type === 'UPDATE_STATE') setGameState(msg.payload);
@@ -236,7 +247,7 @@ const App: React.FC = () => {
       connections.current.set(0, conn);
       setGameState(prev => ({...prev, playerRole: 'client', isMultiplayer: true}));
     } catch (e) {
-      alert("Connection failed. Invite code might be expired or invalid.");
+      alert("Connection failed. Invite code might be malformed.");
     } finally {
       setIsGenerating(false);
     }
@@ -252,14 +263,11 @@ const App: React.FC = () => {
                const isHuman = gameState.humanPlayers.includes(i);
                const isMe = gameState.myPlayerIndex === i;
                return (
-                 <div key={i} className="flex flex-col items-center">
-                    <div className={`w-3 h-3 rounded-full border-2 border-white shadow-sm ${
-                      isMe ? 'bg-indigo-600' : (isHuman ? 'bg-green-500' : 'bg-slate-300')
-                    }`} />
-                 </div>
+                 <div key={i} className={`w-3 h-3 rounded-full border-2 border-white shadow-sm ${
+                   isMe ? 'bg-indigo-600' : (isHuman ? 'bg-green-500' : 'bg-slate-300')
+                 }`} />
                );
              })}
-             <span className="text-[10px] font-black text-slate-400 uppercase ml-1 tracking-tighter">Players</span>
           </div>
         </div>
         <button onClick={() => setShowNetwork(true)} className="bg-indigo-600 text-white px-4 py-2 rounded-xl shadow-lg hover:bg-indigo-700 transition-all font-bold text-sm">
@@ -329,11 +337,11 @@ const App: React.FC = () => {
               <button onClick={() => {
                 const selectedTiles = gameState.playerHand.filter(t => selectedInHand.has(t.id));
                 if (selectedTiles.length < 3 || !isValidSet(selectedTiles)) {
-                   alert("Invalid set selection."); return;
+                   alert("Invalid set."); return;
                 }
                 const pts = calculateSetPoints(selectedTiles);
                 if (!gameState.hasMeld[gameState.myPlayerIndex] && pts < 30) {
-                   alert(`Initial meld must be 30+ points. Current selection: ${pts}`); return;
+                   alert(`Initial meld must be 30+ pts. Current: ${pts}`); return;
                 }
                 setGameState(prev => {
                   const newHand = prev.playerHand.filter(t => !selectedInHand.has(t.id));
@@ -398,28 +406,47 @@ const App: React.FC = () => {
                   }`}>{connStatus}</span>
                </div>
                <p className="text-[10px] text-indigo-600 mt-1 opacity-70">
-                 {connStatus === 'gathering' ? 'Locating network paths... (10s)' : 
+                 {connStatus === 'gathering' ? 'Locating network paths... (Wait 8s)' : 
                   connStatus === 'checking' ? 'Testing connection routes...' : 
-                  connStatus === 'failed' ? 'NAT traversal failed. Try the same hotspot.' : 'Ready for connection.'}
+                  connStatus === 'failed' ? 'NAT traversal failed. Mobile hotspots often block P2P. Use Advanced -> TURN Server.' : 'Ready for connection.'}
                </p>
             </div>
 
+            <button onClick={() => setShowAdvanced(!showAdvanced)} className="text-xs font-bold text-slate-400 hover:text-indigo-600 transition-colors uppercase tracking-widest">
+              {showAdvanced ? 'Hide Advanced Settings' : 'Advanced: Add TURN Server'}
+            </button>
+
+            {showAdvanced && (
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                <p className="text-[10px] text-slate-500 leading-relaxed">
+                  Mobile networks (Hotspots/4G) often require a <strong>Relay (TURN)</strong> server to bypass Symmetric NAT. 
+                  Paste an array of <code>iceServers</code> here:
+                </p>
+                <textarea 
+                  value={customIceJson} 
+                  onChange={(e) => setCustomIceJson(e.target.value)}
+                  placeholder='[{"urls": "turn:your-server.com", "username": "...", "credential": "..."}]'
+                  className="w-full h-24 text-[10px] font-mono p-3 bg-white border rounded-xl resize-none"
+                />
+              </div>
+            )}
+
             <div className="space-y-6">
                <div className="bg-slate-50 p-5 rounded-3xl border border-slate-200 space-y-4">
-                 <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest">Option A: Host a Friend</h4>
+                 <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest">Host a Friend</h4>
                  <button disabled={isGenerating} onClick={initHostConnection} className="w-full bg-white border-2 border-indigo-100 py-3 rounded-2xl font-bold text-indigo-600 hover:bg-indigo-50 transition-all">
-                    {isGenerating ? "Preparing..." : "Create Invite Code"}
+                    {isGenerating ? "Preparing Invite..." : "Create Invite Code"}
                  </button>
                  {offerText && (
                    <div className="space-y-3">
                      <p className="text-[10px] font-black text-slate-400 uppercase">1. Copy this to friend:</p>
                      <div className="flex gap-2">
-                       <textarea readOnly value={offerText} className="flex-1 h-20 text-[10px] p-2 bg-white border rounded-xl font-mono resize-none" />
+                       <textarea readOnly value={offerText} className="flex-1 h-20 text-[10px] p-2 bg-white border rounded-xl font-mono" />
                        <button onClick={() => copyToClipboard(offerText)} className="bg-indigo-50 text-indigo-600 px-3 rounded-xl font-bold">Copy</button>
                      </div>
                      <p className="text-[10px] font-black text-slate-400 uppercase">2. Paste their Response:</p>
                      <div className="flex gap-2">
-                       <textarea value={answerText} onChange={e => setAnswerText(e.target.value)} className="flex-1 h-20 text-[10px] p-2 border rounded-xl font-mono resize-none bg-white" placeholder="Paste response here..." />
+                       <textarea value={answerText} onChange={e => setAnswerText(e.target.value)} className="flex-1 h-20 text-[10px] p-2 border rounded-xl font-mono bg-white" placeholder="Paste response here..." />
                        <button onClick={() => pasteFromClipboard(setAnswerText)} className="bg-slate-100 px-3 rounded-xl font-bold">Paste</button>
                      </div>
                      <button onClick={async () => {
@@ -437,9 +464,9 @@ const App: React.FC = () => {
                </div>
 
                <div className="bg-slate-50 p-5 rounded-3xl border border-slate-200 space-y-4">
-                 <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest">Option B: Join a Friend</h4>
+                 <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest">Join a Friend</h4>
                  <div className="flex gap-2">
-                    <textarea value={remoteOffer} onChange={e => setRemoteOffer(e.target.value)} className="flex-1 h-20 text-[10px] p-2 border rounded-xl font-mono resize-none bg-white" placeholder="Paste host code..." />
+                    <textarea value={remoteOffer} onChange={e => setRemoteOffer(e.target.value)} className="flex-1 h-20 text-[10px] p-2 border rounded-xl font-mono bg-white" placeholder="Paste invite code..." />
                     <button onClick={() => pasteFromClipboard(setRemoteOffer)} className="bg-slate-100 px-3 rounded-xl font-bold">Paste</button>
                  </div>
                  <button disabled={isGenerating} onClick={joinAsClient} className="w-full bg-slate-800 text-white py-3 rounded-2xl font-black shadow-lg">
@@ -449,14 +476,14 @@ const App: React.FC = () => {
                    <div className="space-y-3">
                      <p className="text-[10px] font-black text-slate-400 uppercase">Copy and send back to Host:</p>
                      <div className="flex gap-2">
-                       <textarea readOnly value={answerText} className="flex-1 h-20 text-[10px] p-2 bg-white border rounded-xl font-mono resize-none" />
+                       <textarea readOnly value={answerText} className="flex-1 h-20 text-[10px] p-2 bg-white border rounded-xl font-mono" />
                        <button onClick={() => copyToClipboard(answerText)} className="bg-indigo-50 text-indigo-600 px-3 rounded-xl font-bold">Copy</button>
                      </div>
                    </div>
                  )}
                </div>
             </div>
-            <button onClick={() => setShowNetwork(false)} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black">BACK</button>
+            <button onClick={() => setShowNetwork(false)} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black">BACK TO GAME</button>
           </div>
         </div>
       )}
