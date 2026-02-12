@@ -7,44 +7,32 @@ export class P2PConnection {
 
   constructor() {
     this.pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.services.mozilla.com' }
+      ],
+      iceCandidatePoolSize: 10
     });
 
     this.pc.onconnectionstatechange = () => {
+      console.log("WebRTC State:", this.pc.connectionState);
       this.onConnectionStateChange?.(this.pc.connectionState);
+    };
+
+    this.pc.oniceconnectionstatechange = () => {
+      console.log("ICE State:", this.pc.iceConnectionState);
     };
   }
 
   async createOffer(): Promise<string> {
-    this.dc = this.pc.createDataChannel('game-data');
+    this.dc = this.pc.createDataChannel('game-data', { negotiated: false });
     this.setupDataChannel();
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
     
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        if (this.pc.localDescription) {
-          resolve(btoa(JSON.stringify(this.pc.localDescription)));
-        } else {
-          reject(new Error("ICE gathering timeout"));
-        }
-      }, 5000);
-
-      const checkState = () => {
-        if (this.pc.iceGatheringState === 'complete') {
-          clearTimeout(timeout);
-          this.pc.removeEventListener('icegatheringstatechange', checkState);
-          resolve(btoa(JSON.stringify(this.pc.localDescription)));
-        }
-      };
-
-      if (this.pc.iceGatheringState === 'complete') {
-        clearTimeout(timeout);
-        resolve(btoa(JSON.stringify(this.pc.localDescription)));
-      } else {
-        this.pc.addEventListener('icegatheringstatechange', checkState);
-      }
-    });
+    return this.waitForIceGathering();
   }
 
   async handleOffer(offerB64: string): Promise<string> {
@@ -57,14 +45,15 @@ export class P2PConnection {
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
 
-    return new Promise((resolve, reject) => {
+    return this.waitForIceGathering();
+  }
+
+  private waitForIceGathering(): Promise<string> {
+    return new Promise((resolve) => {
       const timeout = setTimeout(() => {
-        if (this.pc.localDescription) {
-          resolve(btoa(JSON.stringify(this.pc.localDescription)));
-        } else {
-          reject(new Error("ICE gathering timeout"));
-        }
-      }, 5000);
+        console.warn("ICE gathering timed out, sending partial candidates");
+        resolve(btoa(JSON.stringify(this.pc.localDescription)));
+      }, 10000); // 延长到 10 秒以适应移动网络
 
       const checkState = () => {
         if (this.pc.iceGatheringState === 'complete') {
@@ -84,12 +73,19 @@ export class P2PConnection {
   }
 
   async handleAnswer(answerB64: string) {
-    const answer = JSON.parse(atob(answerB64));
-    await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+    try {
+      const answer = JSON.parse(atob(answerB64));
+      await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+    } catch (e) {
+      console.error("Failed to set remote description", e);
+      throw e;
+    }
   }
 
   setupDataChannel() {
     if (!this.dc) return;
+    this.dc.onopen = () => console.log("DataChannel Open");
+    this.dc.onclose = () => console.log("DataChannel Closed");
     this.dc.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);

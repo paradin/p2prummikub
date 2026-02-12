@@ -21,7 +21,7 @@ const getInitialGameState = (role: 'host' | 'client' | 'single' = 'single'): Gam
     playerRole: role,
     myPlayerIndex: 0,
     gameStarted: false,
-    humanPlayers: [0], // Host is always index 0
+    humanPlayers: [0], 
   };
 };
 
@@ -36,14 +36,13 @@ const App: React.FC = () => {
   const [answerText, setAnswerText] = useState("");
   const [remoteOffer, setRemoteOffer] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [connStatus, setConnStatus] = useState<string>("idle");
 
   const [selectedInHand, setSelectedInHand] = useState<Set<string>>(new Set());
-  const [turnPoints, setTurnPoints] = useState(0);
 
   const isMyTurn = gameState.currentPlayerIndex === gameState.myPlayerIndex && gameState.gameStarted && gameState.winner === null;
   const isHost = gameState.playerRole === 'host' || gameState.playerRole === 'single';
 
-  // Helper to determine whose turn message to show
   const getTurnMessage = (state: GameState) => {
     if (state.winner !== null) return `👑 Player ${state.winner} Wins! 👑`;
     const isMe = state.currentPlayerIndex === state.myPlayerIndex;
@@ -51,13 +50,9 @@ const App: React.FC = () => {
     return `${name} Turn`;
   };
 
-  // Broadcast state to all clients (Host only)
   const broadcastState = useCallback((state: GameState) => {
     if (state.playerRole !== 'host') return;
-    
-    // We update the state message here too for consistency
     const updatedMessage = getTurnMessage(state);
-    
     connections.current.forEach((conn, index) => {
       const clientView: GameState = {
         ...state,
@@ -91,34 +86,10 @@ const App: React.FC = () => {
       board: [],
       hasMeld: [false, false, false, false],
       winner: null,
-      message: "Game started! Player 0's turn",
+      message: `Game started! ${getTurnMessage(gameState)}`,
     };
+    newState.message = getTurnMessage(newState);
     setGameState(newState);
-    broadcastState(newState);
-  };
-
-  const handleResetGame = () => {
-    if (!isHost) return;
-    const deck = createDeck();
-    const newState: GameState = {
-      ...gameState,
-      gameStarted: true,
-      pool: deck,
-      playerHand: deck.splice(0, INITIAL_HAND_SIZE),
-      aiHands: [
-        deck.splice(0, INITIAL_HAND_SIZE),
-        deck.splice(0, INITIAL_HAND_SIZE),
-        deck.splice(0, INITIAL_HAND_SIZE),
-      ],
-      currentPlayerIndex: 0,
-      board: [],
-      hasMeld: [false, false, false, false],
-      winner: null,
-      message: "Game Reset! Player 0's turn",
-    };
-    setGameState(newState);
-    setTurnPoints(0);
-    setSelectedInHand(new Set());
     broadcastState(newState);
   };
 
@@ -158,12 +129,10 @@ const App: React.FC = () => {
     });
   }, [broadcastState]);
 
-  // AI Logic
   useEffect(() => {
     if (!gameState.gameStarted || gameState.winner !== null) return;
     if (gameState.currentPlayerIndex !== 0 && (gameState.playerRole === 'single' || gameState.playerRole === 'host')) {
       const aiIdx = gameState.currentPlayerIndex - 1;
-      // Skip if this player index is a human (managed by connections)
       if (gameState.humanPlayers.includes(gameState.currentPlayerIndex)) return;
 
       const timer = setTimeout(() => {
@@ -214,17 +183,19 @@ const App: React.FC = () => {
 
   const initHostConnection = async () => {
     setIsGenerating(true);
+    setConnStatus("gathering");
     const conn = new P2PConnection();
-    const index = gameState.humanPlayers.length; // Next available index
+    const index = gameState.humanPlayers.length;
     if (index >= 4) { alert("Game full!"); setIsGenerating(false); return; }
     
     conn.onMessage = (msg) => handleClientMessage(index, msg);
     conn.onConnectionStateChange = (state) => {
+      setConnStatus(state);
       if (state === 'connected') {
         setGameState(gs => {
           const newHumans = [...gs.humanPlayers, index];
-          const next = { ...gs, humanPlayers: newHumans, message: `Player ${index} joined!` };
-          setTimeout(() => broadcastState(next), 1000); // Wait for channel stability
+          const next = { ...gs, humanPlayers: newHumans, message: `Player ${index} connected!` };
+          setTimeout(() => broadcastState(next), 1000);
           return next;
         });
       }
@@ -236,26 +207,26 @@ const App: React.FC = () => {
       connections.current.set(index, conn);
       setGameState(prev => ({...prev, playerRole: 'host', isMultiplayer: true}));
     } catch (e) {
-      alert("WebRTC error. Check your connection.");
+      alert("Offer creation failed.");
     } finally {
       setIsGenerating(false);
     }
   };
 
   const joinAsClient = async () => {
-    if (!remoteOffer) { alert("Please paste an invite code first."); return; }
+    if (!remoteOffer) { alert("Paste invite code first."); return; }
     setIsGenerating(true);
+    setConnStatus("generating_answer");
     const conn = new P2PConnection();
     
     conn.onMessage = (msg) => {
-      if (msg.type === 'UPDATE_STATE') {
-        setGameState(msg.payload);
-      }
+      if (msg.type === 'UPDATE_STATE') setGameState(msg.payload);
     };
 
     conn.onConnectionStateChange = (state) => {
+      setConnStatus(state);
       if (state === 'connected') {
-        setGameState(p => ({...p, message: "Handshake complete! Connected to Host."}));
+        setGameState(p => ({...p, message: "Connected to Host!"}));
       }
     };
 
@@ -263,10 +234,9 @@ const App: React.FC = () => {
       const ans = await conn.handleOffer(remoteOffer);
       setAnswerText(ans);
       connections.current.set(0, conn);
-      // Ensure role is set so UI updates to show the generated Answer Code
       setGameState(prev => ({...prev, playerRole: 'client', isMultiplayer: true}));
     } catch (e) {
-      alert("Invalid Invite Code.");
+      alert("Connection failed. Invite code might be expired or invalid.");
     } finally {
       setIsGenerating(false);
     }
@@ -285,7 +255,7 @@ const App: React.FC = () => {
                  <div key={i} className="flex flex-col items-center">
                     <div className={`w-3 h-3 rounded-full border-2 border-white shadow-sm ${
                       isMe ? 'bg-indigo-600' : (isHuman ? 'bg-green-500' : 'bg-slate-300')
-                    }`} title={isMe ? "You" : (isHuman ? `Player ${i} (Human)` : `Player ${i} (AI)`)} />
+                    }`} />
                  </div>
                );
              })}
@@ -315,7 +285,6 @@ const App: React.FC = () => {
           </div>
         </section>
 
-        {/* Improved Message Box */}
         <div className={`p-4 rounded-2xl text-center font-bold shadow-sm border-2 transition-all ${
           isMyTurn ? 'bg-indigo-600 text-white border-indigo-400 animate-pulse' : 'bg-white text-slate-500 border-slate-200'
         }`}>
@@ -412,7 +381,6 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Network Modal */}
       {showNetwork && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-[2.5rem] p-8 max-w-lg w-full shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto">
@@ -421,22 +389,37 @@ const App: React.FC = () => {
                <button onClick={() => setShowNetwork(false)} className="text-slate-300 hover:text-slate-600 text-2xl">✕</button>
             </div>
 
+            <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-2xl">
+               <div className="flex justify-between items-center">
+                  <span className="text-xs font-bold text-indigo-400 uppercase tracking-widest">WebRTC Link Status</span>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase ${
+                    connStatus === 'connected' ? 'bg-green-500 text-white' : 
+                    connStatus === 'failed' ? 'bg-red-500 text-white' : 'bg-amber-400 text-white'
+                  }`}>{connStatus}</span>
+               </div>
+               <p className="text-[10px] text-indigo-600 mt-1 opacity-70">
+                 {connStatus === 'gathering' ? 'Locating network paths... (10s)' : 
+                  connStatus === 'checking' ? 'Testing connection routes...' : 
+                  connStatus === 'failed' ? 'NAT traversal failed. Try the same hotspot.' : 'Ready for connection.'}
+               </p>
+            </div>
+
             <div className="space-y-6">
                <div className="bg-slate-50 p-5 rounded-3xl border border-slate-200 space-y-4">
                  <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest">Option A: Host a Friend</h4>
                  <button disabled={isGenerating} onClick={initHostConnection} className="w-full bg-white border-2 border-indigo-100 py-3 rounded-2xl font-bold text-indigo-600 hover:bg-indigo-50 transition-all">
-                    {isGenerating ? "Processing..." : "Create Invite Code"}
+                    {isGenerating ? "Preparing..." : "Create Invite Code"}
                  </button>
                  {offerText && (
                    <div className="space-y-3">
                      <p className="text-[10px] font-black text-slate-400 uppercase">1. Copy this to friend:</p>
                      <div className="flex gap-2">
-                       <textarea readOnly value={offerText} className="flex-1 h-20 text-[10px] p-3 bg-white border rounded-xl font-mono resize-none" />
+                       <textarea readOnly value={offerText} className="flex-1 h-20 text-[10px] p-2 bg-white border rounded-xl font-mono resize-none" />
                        <button onClick={() => copyToClipboard(offerText)} className="bg-indigo-50 text-indigo-600 px-3 rounded-xl font-bold">Copy</button>
                      </div>
                      <p className="text-[10px] font-black text-slate-400 uppercase">2. Paste their Response:</p>
                      <div className="flex gap-2">
-                       <textarea value={answerText} onChange={e => setAnswerText(e.target.value)} className="flex-1 h-20 text-[10px] p-3 border rounded-xl font-mono resize-none bg-white" placeholder="Paste response here..." />
+                       <textarea value={answerText} onChange={e => setAnswerText(e.target.value)} className="flex-1 h-20 text-[10px] p-2 border rounded-xl font-mono resize-none bg-white" placeholder="Paste response here..." />
                        <button onClick={() => pasteFromClipboard(setAnswerText)} className="bg-slate-100 px-3 rounded-xl font-bold">Paste</button>
                      </div>
                      <button onClick={async () => {
@@ -455,19 +438,18 @@ const App: React.FC = () => {
 
                <div className="bg-slate-50 p-5 rounded-3xl border border-slate-200 space-y-4">
                  <h4 className="text-xs font-black text-slate-500 uppercase tracking-widest">Option B: Join a Friend</h4>
-                 <p className="text-[10px] font-black text-slate-400 uppercase">Paste Invite Code:</p>
                  <div className="flex gap-2">
-                    <textarea value={remoteOffer} onChange={e => setRemoteOffer(e.target.value)} className="flex-1 h-20 text-[10px] p-3 border rounded-xl font-mono resize-none bg-white" placeholder="Paste host code..." />
+                    <textarea value={remoteOffer} onChange={e => setRemoteOffer(e.target.value)} className="flex-1 h-20 text-[10px] p-2 border rounded-xl font-mono resize-none bg-white" placeholder="Paste host code..." />
                     <button onClick={() => pasteFromClipboard(setRemoteOffer)} className="bg-slate-100 px-3 rounded-xl font-bold">Paste</button>
                  </div>
                  <button disabled={isGenerating} onClick={joinAsClient} className="w-full bg-slate-800 text-white py-3 rounded-2xl font-black shadow-lg">
-                    {isGenerating ? "Connecting..." : "Generate Answer Code"}
+                    {isGenerating ? "Analyzing..." : "Generate Answer Code"}
                  </button>
                  {answerText && gameState.playerRole === 'client' && (
                    <div className="space-y-3">
                      <p className="text-[10px] font-black text-slate-400 uppercase">Copy and send back to Host:</p>
                      <div className="flex gap-2">
-                       <textarea readOnly value={answerText} className="flex-1 h-20 text-[10px] p-3 bg-white border rounded-xl font-mono resize-none" />
+                       <textarea readOnly value={answerText} className="flex-1 h-20 text-[10px] p-2 bg-white border rounded-xl font-mono resize-none" />
                        <button onClick={() => copyToClipboard(answerText)} className="bg-indigo-50 text-indigo-600 px-3 rounded-xl font-bold">Copy</button>
                      </div>
                    </div>
